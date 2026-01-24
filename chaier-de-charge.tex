@@ -1,0 +1,375 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\geometry{margin=2.5cm}
+
+\title{Cahier des Charges\\
+\large Projet 10 : Surveillance automatique de prix et alertes\\
+\large PFM – Master SDIA}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+Oui. Voici un \textbf{cahier des charges complet} pour le \textbf{Projet 10 : Surveillance automatique de prix et alertes} (PFM – Master SDIA).
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Contexte \& Problématique}
+
+Les prix en ligne (e-commerce, billets, services, abonnements\ldots) changent fréquemment. Les utilisateurs (clients, responsables achats, vendeurs) ont besoin de :
+
+\begin{itemize}
+    \item \textbf{suivre l'évolution} de prix sur une liste de produits,
+    \item \textbf{détecter automatiquement} les baisses/hausses significatives,
+    \item \textbf{recevoir des alertes} (email / dashboard) au bon moment.
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Objectifs du projet}
+
+Concevoir une chaîne complète :
+
+\begin{enumerate}
+    \item \textbf{Collecte} automatique de prix (web scraping dynamique obligatoire : Selenium/Playwright)
+    \item \textbf{Stockage} historique (dataset exploitable, versionné)
+    \item \textbf{Analyse \& Data Science} :
+    \begin{itemize}
+        \item Détection d'anomalies (promotions, hausses suspectes)
+        \item Prévision des baisses de prix
+    \end{itemize}
+    \item \textbf{Système d'alertes} : notifications selon des règles définies
+    \item \textbf{Restitution} : dashboard + rapport + soutenance
+\end{enumerate}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Périmètre (Scope)}
+
+\subsection{Sources de données (au choix)}
+
+\begin{itemize}
+    \item Sites e-commerce (ex : Jumia, Amazon, etc.) \textbf{ou}
+    \item Sites locaux/nationaux pertinents (produits tech, électroménager, parapharmacie, etc.)
+\end{itemize}
+
+\begin{quote}
+Le choix doit respecter les conditions d'utilisation du site et limiter la charge (scraping raisonnable).
+\end{quote}
+
+\subsection{Ce qui est inclus}
+
+\begin{itemize}
+    \item Scraping \textbf{multi-pages + pagination}
+    \item Gestion contenu dynamique (JS, lazy-load)
+    \item Nettoyage, déduplication, normalisation devises/format
+    \item Historisation (prix par date/heure)
+    \item EDA + modèles DS/ML
+    \item Alertes \& dashboard
+\end{itemize}
+
+\subsection{Ce qui est exclu (par défaut)}
+
+\begin{itemize}
+    \item Achat automatisé / contournement agressif anti-bot
+    \item Scraping de données privées derrière authentification non autorisée
+    \item Extraction massive non contrôlée
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Utilisateurs cibles}
+
+\begin{itemize}
+    \item \textbf{Utilisateur final} : souhaite suivre un panier de produits et recevoir des alertes
+    \item \textbf{Analyste} : consulte tendances, anomalies, prévisions
+    \item \textbf{Administrateur} : gère la liste des URLs suivies + fréquence de collecte
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Fonctionnalités attendues}
+
+\subsection{Module ``Configuration de suivi''}
+
+\begin{itemize}
+    \item Ajouter / supprimer un produit à suivre via :
+    \begin{itemize}
+        \item URL produit
+        \item nom (optionnel)
+        \item seuils d'alerte (ex : baisse > 5\%, prix < X)
+        \item fréquence de suivi (ex : 1/jour, 2/jour, etc.)
+    \end{itemize}
+    \item Regrouper par catégorie / marque
+\end{itemize}
+
+\subsection{Module ``Scraping \& Robustesse''}
+
+\begin{itemize}
+    \item Extraction minimum par produit :
+    \begin{itemize}
+        \item \textbf{nom produit}
+        \item \textbf{prix}
+        \item devise
+        \item disponibilité (si possible)
+        \item vendeur (si marketplace, option)
+        \item date/heure de collecte
+        \item URL
+    \end{itemize}
+    \item Gestion :
+    \begin{itemize}
+        \item pagination (si liste/catégorie)
+        \item timeouts, retries, logs
+        \item changements DOM (sélecteurs robustes)
+        \item erreurs HTTP / pages indisponibles
+    \end{itemize}
+    \item Respect des bonnes pratiques : délais entre requêtes, user-agent raisonnable
+\end{itemize}
+
+\subsection{Module ``Dataset \& Historique''}
+
+\begin{itemize}
+    \item Stockage format \textbf{CSV/Parquet} (minimum exigé) + option DB (SQLite/PostgreSQL)
+    \item Schéma de données propre (colonnes normalisées)
+    \item Gestion doublons + valeurs manquantes
+    \item Versioning (au minimum par date)
+\end{itemize}
+
+\subsection{Module ``Analyse Exploratoire (EDA)''}
+
+\begin{itemize}
+    \item Statistiques :
+    \begin{itemize}
+        \item min/max/moyenne, volatilité, variation journalière
+        \item distribution des prix par catégorie/marque
+    \end{itemize}
+    \item Visualisations :
+    \begin{itemize}
+        \item séries temporelles par produit
+        \item boxplots comparatifs
+        \item heatmap (corrélations si features)
+        \item top baisses / top hausses
+    \end{itemize}
+\end{itemize}
+
+\subsection{Module ``Détection d'anomalies''}
+
+\begin{itemize}
+    \item Définir ``anomalie'' :
+    \begin{itemize}
+        \item promo exceptionnelle (drop soudain)
+        \item hausse anormale
+        \item prix incohérent (scraping bug)
+    \end{itemize}
+    \item Méthodes possibles :
+    \begin{itemize}
+        \item règles (z-score, IQR)
+        \item Isolation Forest / One-Class SVM (bonus)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Module ``Prévision / ML''}
+
+Objectif : prévoir le prix à court terme \textbf{ou} la probabilité de baisse.
+
+\begin{itemize}
+    \item Baselines recommandées :
+    \begin{itemize}
+        \item moyenne mobile / exponential smoothing
+    \end{itemize}
+    \item ML (si dataset suffisant) :
+    \begin{itemize}
+        \item régression (RandomForest/XGBoost/Linear)
+        \item modèle de classification ``baisse dans 3 jours : oui/non''
+    \end{itemize}
+    \item Évaluation :
+    \begin{itemize}
+        \item split temporel (train $\rightarrow$ test chronologique)
+        \item MAE/RMSE (régression), F1/ROC-AUC (classification)
+    \end{itemize}
+\end{itemize}
+
+\subsection{Module ``Alertes''}
+
+\begin{itemize}
+    \item Alertes déclenchées selon :
+    \begin{itemize}
+        \item prix < seuil
+        \item baisse > X\% sur Y jours
+        \item anomalie détectée
+    \end{itemize}
+    \item Canaux :
+    \begin{itemize}
+        \item email (minimum) \textbf{ou} console + fichier log si email non possible
+        \item dashboard (indicateurs ``alerts'')
+    \end{itemize}
+\end{itemize}
+
+\subsection{Dashboard (Restitution)}
+
+\begin{itemize}
+    \item Pages/sections :
+    \begin{itemize}
+        \item vue globale (kpi : \#produits, \#alertes, plus fortes variations)
+        \item recherche + filtre (catégorie, marque)
+        \item détail produit (courbe prix + prédiction + anomalies)
+    \end{itemize}
+    \item Outils :
+    \begin{itemize}
+        \item Matplotlib/Seaborn (minimum) ou Power BI (option)
+        \item Streamlit (bonus très apprécié)
+    \end{itemize}
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Exigences non fonctionnelles}
+
+\subsection{Qualité \& lisibilité du code}
+
+\begin{itemize}
+    \item Code structuré : \texttt{scraping/}, \texttt{cleaning/}, \texttt{analysis/}, \texttt{modeling/}, \texttt{alerts/}
+    \item Commentaires + README d'exécution
+    \item Gestion exceptions + logs
+\end{itemize}
+
+\subsection{Performance}
+
+\begin{itemize}
+    \item Temps de scraping raisonnable (batch)
+    \item Mise en cache / limitation fréquence
+    \item Possibilité d'exécuter en ``daily job'' (cron / planificateur)
+\end{itemize}
+
+\subsection{Conformité \& éthique}
+
+\begin{itemize}
+    \item Respect conditions d'utilisation des sites
+    \item Pas de collecte de données personnelles
+    \item Débit de requêtes modéré, pas de surcharge
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Architecture proposée (simple et claire)}
+
+\begin{enumerate}
+    \item \textbf{Scraper} (Playwright/Selenium) $\rightarrow$ export brut (raw)
+    \item \textbf{Nettoyage} (Pandas) $\rightarrow$ dataset final (Parquet/CSV)
+    \item \textbf{Analyse + ML} $\rightarrow$ outputs (figures + métriques)
+    \item \textbf{Alerting} $\rightarrow$ email/log + table ``alerts''
+    \item \textbf{Dashboard} $\rightarrow$ visualisation + exploration
+\end{enumerate}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Données \& format (proposition de schéma)}
+
+Table/CSV \texttt{prices\_history} :
+
+\begin{itemize}
+    \item \texttt{timestamp}
+    \item \texttt{product\_id} (hash URL)
+    \item \texttt{product\_name}
+    \item \texttt{price\_value}
+    \item \texttt{currency}
+    \item \texttt{availability} (option)
+    \item \texttt{seller} (option)
+    \item \texttt{source\_site}
+    \item \texttt{url}
+\end{itemize}
+
+Table/CSV \texttt{alerts} :
+
+\begin{itemize}
+    \item \texttt{timestamp}
+    \item \texttt{product\_id}
+    \item \texttt{alert\_type} (threshold\_drop / below\_price / anomaly)
+    \item \texttt{message}
+    \item \texttt{price\_value}
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Plan de réalisation (phases)}
+
+\textbf{Phase 1 – Analyse du site} : pages, dynamique, API possible, anti-bot\\
+\textbf{Phase 2 – Scraping} : extraction robuste + pagination\\
+\textbf{Phase 3 – Nettoyage} : normalisation + dataset final\\
+\textbf{Phase 4 – EDA} : stats + graphiques principaux\\
+\textbf{Phase 5 – DS/ML} : anomalies + prévision + évaluation\\
+\textbf{Phase 6 – Alertes + dashboard}\\
+\textbf{Phase 7 – Rapport + soutenance}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Livrables attendus}
+
+Conformément au document :
+
+\begin{enumerate}
+    \item \textbf{Code source complet} (.py ou .ipynb)
+    \item \textbf{Dataset final} (CSV/Parquet)
+    \item \textbf{Rapport scientifique (PDF)} : intro, méthodo, analyse, résultats, limites
+    \item \textbf{Présentation orale} 10–15 min
+\end{enumerate}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+\section{Critères d'acceptation (Checklist)}
+
+\begin{itemize}
+    \item Scraper dynamique fonctionne sur au moins \textbf{N produits} (ex : $\geq$ 100)
+    \item Historique de prix sur une période (ex : $\geq$ 7 jours ou simulation)
+    \item Dataset propre + documentation colonnes
+    \item Au moins \textbf{5 visualisations} pertinentes
+    \item Détection d'anomalies opérationnelle (avec exemples)
+    \item Prévision ou probabilité de baisse avec métriques
+    \item Alertes démontrées (email ou logs)
+    \item Rapport clair + conclusions critiques
+\end{itemize}
+
+\vspace{0.5cm}
+\rule{\textwidth}{0.4pt}
+\vspace{0.5cm}
+
+Si tu veux, je peux aussi te donner :
+
+\begin{itemize}
+    \item une \textbf{structure de dossier} prête à coder,
+    \item un \textbf{template de rapport} (plan + sections),
+    \item et une \textbf{liste de features ML} pertinentes (promos, volatilité, moyenne mobile, etc.).
+\end{itemize}
+
+\end{document}
