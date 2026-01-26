@@ -1,27 +1,24 @@
 """
-Web scraper for Marjanemall.ma with infinite scroll support
-Extracts product information from category pages with dynamic loading
+Marjanemall.ma scraper using Playwright
+Uses browser automation to extract fully rendered product data
 """
 
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright, Page, BrowserContext
 import time
-import re
-import random
 import json
-from typing import List, Dict, Optional, Tuple
-from urllib.parse import urljoin, urlparse, parse_qs, urlencode
+import re
+from typing import List, Dict, Optional
+from urllib.parse import urljoin
 import logging
 from datetime import datetime
 
-# Configure logging
 logger = logging.getLogger(__name__)
 
 
 class MarjanemallScraper:
-    """Scraper for Marjanemall.ma website with infinite scroll support"""
+    """Scraper for Marjanemall.ma using Playwright"""
     
-    # Category URLs to scrape
+    # Category slugs to scrape
     CATEGORIES = [
         'telephone-objets-connectes',
         'informatique-gaming',
@@ -37,500 +34,396 @@ class MarjanemallScraper:
         'epicerie-fine'
     ]
     
-    def __init__(self, base_url: str = "https://www.marjanemall.ma", delay: float = 3.0):
+    def __init__(self, base_url: str = "https://www.marjanemall.ma", headless: bool = True, scroll_delay: float = 2.0):
         """
         Initialize the Marjanemall scraper
         
         Args:
             base_url: Base URL of Marjanemall.ma
-            delay: Delay between requests in seconds (default: 3.0s)
+            headless: Run browser in headless mode
+            scroll_delay: Delay between scrolls in seconds
         """
         self.base_url = base_url.rstrip('/')
-        self.delay = delay
-        self.session = requests.Session()
-        
-        # Realistic browser headers
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-            'Accept-Language': 'fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
-        })
+        self.headless = headless
+        self.scroll_delay = scroll_delay
+        self.playwright = None
+        self.browser = None
+        self.context = None
     
-    def get_page_with_scroll_simulation(self, url: str, scroll_pages: int = 5) -> Optional[str]:
+    def __enter__(self):
+        """Context manager entry"""
+        self.playwright = sync_playwright().start()
+        self.browser = self.playwright.chromium.launch(
+            headless=self.headless,
+            args=['--disable-blink-features=AutomationControlled']
+        )
+        self.context = self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        )
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit"""
+        if self.browser:
+            self.browser.close()
+        if self.playwright:
+            self.playwright.stop()
+    
+    def extract_price(self, price_text: str) -> Optional[float]:
         """
-        Get page content by simulating multiple scrolls to trigger infinite loading
+        Extract numeric price from text
         
         Args:
-            url: URL to fetch
-            scroll_pages: Number of times to "scroll" (load more batches)
+            price_text: Price text (e.g., "99.00 DH" or "99 DH")
             
         Returns:
-            HTML content or None if error
+            Float price value or None
         """
-        all_html_parts = []
-        seen_product_urls = set()
-        
-        for page_num in range(1, scroll_pages + 1):
-            try:
-                # Construct URL with page parameter
-                if '?' in url:
-                    page_url = f"{url}&page={page_num}"
-                else:
-                    page_url = f"{url}?page={page_num}"
-                
-                logger.info(f"Loading scroll batch {page_num}/{scroll_pages}: {page_url}")
-                
-                # Add delay with random jitter
-                if page_num > 1:
-                    time.sleep(self.delay + random.uniform(1, 3))
-                
-                response = self.session.get(page_url, timeout=30)
-                response.raise_for_status()
-                
-                # Check if we got valid content
-                if len(response.text) < 1000:
-                    logger.warning(f"Very small response on batch {page_num}")
-                    continue
-                
-                # Parse the HTML
-                soup = BeautifulSoup(response.text, 'html.parser')
-                
-                # Check if this page has products
-                product_count = self.count_products_in_html(response.text)
-                
-                if product_count == 0:
-                    logger.info(f"No products found in batch {page_num}, might be at the end")
-                    
-                    # Check for empty page message
-                    if 'Aucun produit trouvé' in response.text:
-                        logger.info(f"'Aucun produit trouvé' found, stopping")
-                        break
-                    
-                    # Try one more page before stopping
-                    if page_num < scroll_pages:
-                        continue
-                    else:
-                        break
-                
-                logger.info(f"Found {product_count} products in batch {page_num}")
-                
-                # Extract new product URLs to check if we're getting new content
-                new_product_urls = self.extract_product_urls_from_html(response.text)
-                new_unique_urls = [url for url in new_product_urls if url not in seen_product_urls]
-                
-                if not new_unique_urls and page_num > 1:
-                    logger.info(f"No new products in batch {page_num}, might be duplicate content")
-                    # Try one more page to be sure
-                    if page_num < scroll_pages - 1:
-                        continue
-                    else:
-                        break
-                
-                # Add new URLs to seen set
-                seen_product_urls.update(new_product_urls)
-                
-                # Store this HTML part
-                all_html_parts.append(response.text)
-                
-                # If we got fewer than expected products, might be near the end
-                if product_count < 20 and page_num > 1:
-                    logger.info(f"Few products ({product_count}), might be near end of category")
-                
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Error loading batch {page_num}: {e}")
-                if page_num > 1:
-                    # If we already have some conAVtent, return what we have
-                    break
-                else:
-                    return None
-        
-        if not all_html_parts:
+        if not price_text:
             return None
         
-        # Combine all HTML parts (or just use the last one since it should contain all loaded products)
-        # For infinite scroll, the last page usually contains all products loaded so far
-        return all_html_parts[-1]
+        # Handle price ranges
+        if ' - ' in price_text or ' – ' in price_text or ' — ' in price_text:
+            price_text = re.split(r'\s*[-–—]\s*', price_text)[0].strip()
+        
+        # Remove currency and spaces, keep only digits and dots
+        price_clean = re.sub(r'[^\d.]', '', price_text.replace(' ', ''))
+        
+        try:
+            return float(price_clean)
+        except ValueError:
+            logger.warning(f"Could not parse price: {price_text}")
+            return None
     
-    def count_products_in_html(self, html_content: str) -> int:
-        """Count products in HTML content"""
-        soup = BeautifulSoup(html_content, 'html.parser')
-        
-        # Count product cards
-        product_cards = soup.find_all('div', class_='animate-slideUp')
-        if product_cards:
-            return len(product_cards)
-        
-        # Count product links
-        product_links = soup.find_all('a', href=re.compile(r'^/p/'))
-        unique_links = set()
-        for link in product_links:
-            href = link.get('href', '')
-            if href:
-                unique_links.add(href)
-        
-        return len(unique_links)
-    
-    def extract_product_urls_from_html(self, html_content: str) -> List[str]:
-        """Extract product URLs from HTML content"""
-        soup = BeautifulSoup(html_content, 'html.parser')
-        product_urls = []
-        
-        product_links = soup.find_all('a', href=re.compile(r'^/p/'))
-        for link in product_links:
-            href = link.get('href', '')
-            if href:
-                product_urls.append(href)
-        
-        return list(set(product_urls))  # Remove duplicates
-    
-    def get_page(self, url: str, max_retries: int = 3) -> Optional[BeautifulSoup]:
+    def extract_products_from_page(self, page: Page, category: str, page_num: int = 1) -> List[Dict]:
         """
-        Fetch a page with retry logic
+        Extract products from a rendered page using JavaScript
         
         Args:
-            url: URL to fetch
-            max_retries: Maximum number of retry attempts
-            
-        Returns:
-            BeautifulSoup object or None if error
-        """
-        for attempt in range(max_retries):
-            try:
-                if attempt > 0:
-                    wait_time = self.delay * (2 ** attempt) + random.uniform(1, 3)
-                    logger.warning(f"Retry {attempt}/{max_retries-1} for {url} after {wait_time:.1f}s")
-                    time.sleep(wait_time)
-                
-                logger.info(f"Fetching: {url}")
-                
-                response = self.session.get(url, timeout=30)
-                response.raise_for_status()
-                
-                # Check for blocking
-                if len(response.content) < 1000:
-                    logger.warning(f"Small response ({len(response.content)} bytes)")
-                    if attempt < max_retries - 1:
-                        continue
-                
-                # Parse HTML
-                try:
-                    soup = BeautifulSoup(response.content, 'lxml')
-                except:
-                    soup = BeautifulSoup(response.content, 'html.parser')
-                
-                # Basic validation
-                if not soup or not soup.find('body'):
-                    logger.warning("Invalid HTML")
-                    if attempt < max_retries - 1:
-                        continue
-                    return None
-                
-                time.sleep(self.delay + random.uniform(0.5, 1.5))
-                return soup
-                
-            except Exception as e:
-                logger.error(f"Error fetching {url} (attempt {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    continue
-        
-        return None
-    
-    def extract_products_from_html(self, html_content: str, category: str, page_num: int = 1) -> List[Dict]:
-        """
-        Extract products from HTML content
-        
-        Args:
-            html_content: HTML string
+            page: Playwright page object
             category: Category name
             page_num: Page number
             
         Returns:
             List of product dictionaries
         """
-        soup = BeautifulSoup(html_content, 'html.parser')
-        products = []
-        
-        # Find product cards
-        product_cards = soup.find_all('div', class_='animate-slideUp')
-        
-        # Fallback: look for product links
-        if not product_cards:
-            product_links = soup.find_all('a', href=re.compile(r'^/p/'))
-            for link in product_links:
-                # Check if it looks like a product card
-                classes = link.get('class', [])
-                class_str = ' '.join(classes) if isinstance(classes, list) else str(classes)
-                if 'bg-white' in class_str and 'rounded' in class_str:
-                    product_cards.append(link)
-        
-        logger.info(f"Found {len(product_cards)} product cards in HTML")
-        
-        # Parse each product
-        for card in product_cards:
-            try:
-                product = self.parse_product_card(card)
-                if product:
-                    product['category'] = category
-                    product['page_number'] = page_num
-                    product['scraped_timestamp'] = datetime.now().isoformat() + 'Z'
-                    products.append(product)
-            except Exception as e:
-                logger.error(f"Error parsing product card: {e}")
-                continue
-        
-        return products
-    
-    def parse_product_card(self, product_card) -> Optional[Dict]:
-        """
-        Parse a single product card element
-        
-        Args:
-            product_card: BeautifulSoup element containing product info
-            
-        Returns:
-            Dictionary with product information or None
-        """
         try:
-            product = {}
-            
-            # Get the link element
-            if hasattr(product_card, 'name') and product_card.name == 'a':
-                link_elem = product_card
-            else:
-                link_elem = product_card.find('a', href=re.compile(r'^/p/'))
-                if not link_elem:
-                    return None
-            
-            # Basic info
-            href = link_elem.get('href', '')
-            if not href:
-                return None
-            
-            product['product_url'] = href
-            product['full_url'] = urljoin(self.base_url, href)
-            
-            # Product ID
-            product['product_id'] = self.extract_product_id(product_card)
-            
-            # Product name
-            name_elem = link_elem.find('h3', class_=re.compile(r'text-sm.*font-medium.*text-gray-800'))
-            if not name_elem:
-                name_elem = link_elem.find('h3')
-            
-            if name_elem:
-                product['product_name'] = name_elem.get_text(strip=True)
-            else:
-                # Try to get from image alt
-                img_elem = link_elem.find('img')
-                if img_elem:
-                    alt_text = img_elem.get('alt', '')
-                    if alt_text:
-                        product['product_name'] = alt_text
-                else:
-                    return None  # Skip if no name
-            
-            # Price - look for the price container
-            price_container = None
-            
-            # Try multiple selectors for price container
-            selectors = [
-                'div.flex.items-center.gap-0\\.5',
-                'div.flex.items-center.gap',
-                'div.flex.items-center'
-            ]
-            
-            for selector in selectors:
-                price_container = link_elem.select_one(selector)
-                if price_container and price_container.find('span', class_=re.compile(r'text-lg.*font-extrabold.*text-primary')):
-                    break
-            
-            if price_container:
-                # Get main price
-                main_price_elem = price_container.find('span', class_=re.compile(r'text-lg.*font-extrabold.*text-primary'))
-                if main_price_elem:
-                    main_price = main_price_elem.get_text(strip=True)
+            # Execute JavaScript to extract product data
+            product_data = page.evaluate("""
+                () => {
+                    const products = [];
                     
-                    # Get decimal parts
-                    decimal_container = price_container.find('div', class_='flex flex-col items-center justify-center')
-                    if decimal_container:
-                        decimal_spans = decimal_container.find_all('span', class_=re.compile(r'text-\[[89]px\].*font-bold.*text-primary'))
-                        decimals = ''.join([span.get_text(strip=True) for span in decimal_spans[:2]])
+                    // Look for product elements
+                    const productElements = document.querySelectorAll('div.animate-slideUp');
+                    
+                    productElements.forEach(element => {
+                        const product = {};
                         
-                        if decimals:
-                            price_text = f"{main_price}.{decimals} DH"
-                            product['current_price_text'] = price_text
-                            
-                            # Parse numeric price
-                            try:
-                                product['current_price'] = float(f"{main_price}.{decimals}")
-                            except:
-                                product['current_price'] = None
-                        else:
-                            product['current_price_text'] = f"{main_price} DH"
-                            product['current_price'] = self.extract_numeric_price(main_price)
-                    else:
-                        product['current_price_text'] = f"{main_price} DH"
-                        product['current_price'] = self.extract_numeric_price(main_price)
+                        // Find the main link element
+                        const linkElem = element.querySelector('a[href^="/p/"]');
+                        if (!linkElem) return;
+                        
+                        // Get product URL and ID
+                        product.product_url = linkElem.getAttribute('href');
+                        const urlMatch = product.product_url.match(/([a-z0-9]{8,})$/i);
+                        if (urlMatch) {
+                            product.product_id = urlMatch[1].toUpperCase();
+                        }
+                        
+                        // Get product name
+                        const nameElem = linkElem.querySelector('h3.text-sm.font-medium.text-gray-800');
+                        if (!nameElem) {
+                            nameElem = linkElem.querySelector('h3');
+                        }
+                        if (nameElem) {
+                            product.product_name = nameElem.textContent.trim();
+                        }
+                        
+                        // Get current price
+                        const priceContainer = linkElem.querySelector('div.flex.items-center.gap-0.5');
+                        if (priceContainer) {
+                            const mainPrice = priceContainer.querySelector('span.text-lg, span.text-xl');
+                            if (mainPrice) {
+                                const mainPriceText = mainPrice.textContent.trim();
+                                
+                                // Get decimal parts
+                                const decimalSpans = priceContainer.querySelectorAll('span.text-\\[8px\\], span.text-\\[9px\\]');
+                                let decimals = '';
+                                decimalSpans.forEach(span => {
+                                    const text = span.textContent.trim();
+                                    if (text && text !== 'DH' && !isNaN(text)) {
+                                        decimals += text;
+                                    }
+                                });
+                                
+                                if (decimals) {
+                                    product.current_price_text = mainPriceText + '.' + decimals + ' DH';
+                                } else {
+                                    product.current_price_text = mainPriceText + ' DH';
+                                }
+                            }
+                        }
+                        
+                        // Get original price
+                        const oldPriceElem = linkElem.querySelector('span.text-xs.text-gray-400.line-through');
+                        if (oldPriceElem) {
+                            product.original_price = oldPriceElem.textContent.trim();
+                        }
+                        
+                        // Get discount
+                        const discountElem = linkElem.querySelector('span.bg-\\[#e91e63\\]');
+                        if (discountElem) {
+                            product.discount_percentage = discountElem.textContent.trim();
+                        }
+                        
+                        // Get brand (from image or name)
+                        const brandImg = element.querySelector('img[alt="Brand"]');
+                        if (brandImg) {
+                            const brandSrc = brandImg.getAttribute('src') || '';
+                            const brandMatch = brandSrc.match(/([^/]+)_\\d+\\.png/);
+                            if (brandMatch) {
+                                product.brand = brandMatch[1].toUpperCase();
+                            }
+                        }
+                        
+                        // Extract brand from name if not found
+                        if (!product.brand && product.product_name) {
+                            const nameParts = product.product_name.split(' - ');
+                            if (nameParts.length > 0) {
+                                product.brand = nameParts[0].trim();
+                            }
+                        }
+                        
+                        // Get seller
+                        const sellerSpans = linkElem.querySelectorAll('span');
+                        for (const span of sellerSpans) {
+                            const text = span.textContent.trim();
+                            if (text.includes('Vendu par')) {
+                                const match = text.match(/Vendu par\\s+(.+)/i);
+                                if (match) {
+                                    product.seller = match[1].trim();
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // Get image
+                        const imgElem = linkElem.querySelector('img.object-contain, img');
+                        if (imgElem) {
+                            product.image_url = imgElem.getAttribute('src') || imgElem.getAttribute('data-src');
+                            product.image_alt = imgElem.getAttribute('alt');
+                        }
+                        
+                        // Check for fast delivery
+                        const expressText = linkElem.textContent || '';
+                        product.fast_delivery = expressText.includes('Livraison rapide');
+                        
+                        // Only add if we have essential data
+                        if (product.product_name || product.product_id) {
+                            products.push(product);
+                        }
+                    });
+                    
+                    return products;
+                }
+            """)
             
-            # Original price
-            old_price_elem = link_elem.find('span', class_='line-through')
-            if old_price_elem:
-                old_price_text = old_price_elem.get_text(strip=True)
-                product['original_price'] = old_price_text
-                product['original_price_value'] = self.extract_numeric_price(old_price_text)
-            
-            # Discount
-            discount_elem = link_elem.find('span', class_=re.compile(r'bg-\[#e91e63\]'))
-            if discount_elem:
-                discount_text = discount_elem.get_text(strip=True)
-                product['discount_percentage'] = discount_text
+            # Process and format products
+            formatted_products = []
+            for product in product_data:
+                formatted_product = {
+                    'product_id': product.get('product_id'),
+                    'product_name': product.get('product_name'),
+                    'product_url': product.get('product_url'),
+                    'full_url': urljoin(self.base_url, product.get('product_url', '')),
+                    'current_price_text': product.get('current_price_text'),
+                    'current_price': self.extract_price(product.get('current_price_text', '')),
+                    'original_price': product.get('original_price'),
+                    'original_price_value': self.extract_price(product.get('original_price', '')),
+                    'discount_percentage': product.get('discount_percentage'),
+                    'brand': product.get('brand'),
+                    'seller': product.get('seller'),
+                    'image_url': product.get('image_url'),
+                    'image_alt': product.get('image_alt'),
+                    'fast_delivery': product.get('fast_delivery', False),
+                    'category': category,
+                    'page_number': page_num,
+                    'scraped_timestamp': datetime.now().isoformat() + 'Z',
+                    'source': 'marjanemall.ma'
+                }
                 
-                # Extract numeric discount
-                match = re.search(r'(\d+)', discount_text)
-                if match:
-                    product['discount_value'] = int(match.group(1))
+                # Calculate discount value
+                if formatted_product.get('current_price') and formatted_product.get('original_price_value'):
+                    try:
+                        current = float(formatted_product['current_price'])
+                        original = float(formatted_product['original_price_value'])
+                        if original > 0 and current < original:
+                            discount_percent = ((original - current) / original) * 100
+                            formatted_product['discount_value'] = int(discount_percent)
+                    except (ValueError, TypeError):
+                        formatted_product['discount_value'] = None
+                else:
+                    formatted_product['discount_value'] = None
+                
+                formatted_products.append(formatted_product)
             
-            # Brand (from product name)
-            if product.get('product_name'):
-                parts = product['product_name'].split(' - ')
-                if len(parts) > 1:
-                    product['brand'] = parts[0].strip()
-            
-            # Seller
-            seller_spans = link_elem.find_all('span')
-            for span in seller_spans:
-                span_text = span.get_text(strip=True)
-                if 'Vendu par' in span_text:
-                    match = re.search(r'Vendu par\s+(.+)', span_text, re.IGNORECASE)
-                    if match:
-                        product['seller'] = match.group(1).strip()
-                    break
-            
-            # Image
-            img_elem = link_elem.find('img', class_=re.compile(r'object-contain.*mix-blend-multiply'))
-            if not img_elem:
-                img_elem = link_elem.find('img')
-            
-            if img_elem:
-                product['image_url'] = img_elem.get('src') or img_elem.get('data-src')
-                product['image_alt'] = img_elem.get('alt', '')
-            
-            # Fast delivery
-            if link_elem.find(string=re.compile(r'Livraison rapide', re.IGNORECASE)):
-                product['fast_delivery'] = True
-            else:
-                product['fast_delivery'] = False
-            
-            return product
+            logger.info(f"Extracted {len(formatted_products)} products from page {page_num}")
+            return formatted_products
             
         except Exception as e:
-            logger.error(f"Error parsing product card: {e}")
-            return None
+            logger.error(f"Error extracting products from page: {e}", exc_info=True)
+            return []
     
-    def extract_product_id(self, product_card) -> Optional[str]:
-        """Extract product ID from product card"""
-        # From cart button
-        cart_button = product_card.find('button', id=re.compile(r'cart-btn-'))
-        if cart_button:
-            button_id = cart_button.get('id', '')
-            match = re.search(r'cart-btn-(.+)', button_id)
-            if match:
-                return match.group(1).upper()
-        
-        # From URL
-        link = product_card.find('a', href=re.compile(r'^/p/'))
-        if not link and hasattr(product_card, 'get'):
-            link = product_card
-        
-        if link:
-            href = link.get('href', '')
-            # Extract last part as ID (e.g., /p/product-name-aaali50673)
-            parts = href.split('-')
-            if parts:
-                last_part = parts[-1]
-                if re.match(r'^[a-z]{4,5}\d{5}$', last_part, re.IGNORECASE):
-                    return last_part.upper()
-        
-        return None
-    
-    def extract_numeric_price(self, price_text: str) -> Optional[float]:
-        """Extract numeric price from text"""
-        if not price_text:
-            return None
-        
-        # Remove currency symbols and text
-        price_text = re.sub(r'[^\d.,]', '', price_text)
-        
-        # Handle European format (1.234,56 -> 1234.56)
-        if ',' in price_text and '.' in price_text:
-            # Format: 1.234,56
-            price_text = price_text.replace('.', '').replace(',', '.')
-        elif ',' in price_text:
-            # Format: 1234,56
-            price_text = price_text.replace(',', '.')
-        
-        try:
-            return float(price_text)
-        except ValueError:
-            return None
-    
-    def scrape_category(self, category: str, max_scroll_batches: int = 10) -> List[Dict]:
+    def is_empty_page(self, page: Page) -> bool:
         """
-        Scrape a category with infinite scroll simulation
+        Check if the page is empty (no products found)
+        
+        Args:
+            page: Playwright page object
+            
+        Returns:
+            True if page is empty, False otherwise
+        """
+        try:
+            empty_check = page.evaluate("""
+                () => {
+                    // Check for "Aucun produit trouvé" message
+                    const emptyText = document.body.textContent || '';
+                    if (emptyText.includes('Aucun produit trouvé')) {
+                        return true;
+                    }
+                    
+                    // Check if grid is empty
+                    const grid = document.querySelector('div.grid.grid-cols-2');
+                    if (grid) {
+                        const productElements = grid.querySelectorAll('div.animate-slideUp');
+                        return productElements.length === 0;
+                    }
+                    
+                    return false;
+                }
+            """)
+            return empty_check
+        except:
+            return False
+    
+    def scrape_category_page(self, category: str, page_num: int = 1) -> List[Dict]:
+        """
+        Scrape a single category page
         
         Args:
             category: Category slug
-            max_scroll_batches: Maximum number of scroll batches to simulate
+            page_num: Page number
             
         Returns:
             List of product dictionaries
         """
-        category_url = f"{self.base_url}/{category}"
+        if not self.context:
+            raise RuntimeError("Scraper not initialized. Use 'with' statement or call start() first")
+        
+        # Construct URL
+        if page_num == 1:
+            url = f"{self.base_url}/{category}"
+        else:
+            url = f"{self.base_url}/{category}?page={page_num}"
+        
+        logger.info(f"Scraping page {page_num} of category '{category}': {url}")
+        
+        page = self.context.new_page()
+        
+        try:
+            # Navigate to page
+            page.goto(url, wait_until='networkidle', timeout=60000)
+            
+            # Wait for content to load
+            time.sleep(3)
+            
+            # Check for empty page
+            if self.is_empty_page(page):
+                logger.info(f"Empty page detected on page {page_num}")
+                return []
+            
+            # Scroll to trigger lazy loading
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(self.scroll_delay)
+            
+            # Scroll back up and down again to ensure all content loads
+            page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(1)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(self.scroll_delay)
+            
+            # Extract products
+            products = self.extract_products_from_page(page, category, page_num)
+            
+            return products
+            
+        except Exception as e:
+            logger.error(f"Error scraping page {page_num} of {category}: {e}", exc_info=True)
+            return []
+        finally:
+            page.close()
+    
+    def scrape_category(self, category: str, max_pages: int = 150) -> List[Dict]:
+        """
+        Scrape all pages of a category
+        
+        Args:
+            category: Category slug
+            max_pages: Maximum number of pages to scrape
+            
+        Returns:
+            List of all product dictionaries from the category
+        """
         all_products = []
         seen_product_ids = set()
         
         logger.info(f"Starting to scrape category: {category}")
-        logger.info(f"Will simulate {max_scroll_batches} scroll batches")
         
-        # Get initial page with scroll simulation
-        html_content = self.get_page_with_scroll_simulation(category_url, scroll_pages=max_scroll_batches)
-        
-        if not html_content:
-            logger.warning(f"Could not load content for {category}")
-            return []
-        
-        # Extract all products from the loaded content
-        products = self.extract_products_from_html(html_content, category, 1)
-        
-        # Filter duplicates
-        for product in products:
-            product_id = product.get('product_id')
-            product_url = product.get('product_url')
+        page = 1
+        while page <= max_pages:
+            products = self.scrape_category_page(category, page)
             
-            # Use product_id if available, otherwise product_url
-            key = product_id or product_url
+            if not products:
+                logger.info(f"No products found on page {page}, stopping")
+                break
             
-            if key and key not in seen_product_ids:
-                seen_product_ids.add(key)
-                all_products.append(product)
+            # Filter duplicates
+            new_products = []
+            for product in products:
+                product_id = product.get('product_id')
+                if product_id and product_id not in seen_product_ids:
+                    seen_product_ids.add(product_id)
+                    new_products.append(product)
+                elif not product_id:
+                    # Use URL as fallback
+                    url = product.get('product_url')
+                    if url and url not in seen_product_ids:
+                        seen_product_ids.add(url)
+                        new_products.append(product)
+            
+            if not new_products:
+                logger.info(f"All products on page {page} are duplicates, stopping")
+                break
+            
+            all_products.extend(new_products)
+            logger.info(f"Page {page}: Added {len(new_products)} new products (total: {len(all_products)})")
+            
+            page += 1
+            
+            # Delay between pages
+            time.sleep(self.scroll_delay)
         
-        logger.info(f"Category '{category}': Found {len(all_products)} unique products")
+        logger.info(f"Category '{category}': Scraped {len(all_products)} total products from {page-1} pages")
         return all_products
     
-    def scrape_all_categories(self, max_scroll_batches: int = 10) -> Dict[str, List[Dict]]:
+    def scrape_all_categories(self, max_pages_per_category: int = 150) -> Dict[str, List[Dict]]:
         """
-        Scrape all categories with infinite scroll support
+        Scrape all categories
         
         Args:
-            max_scroll_batches: Maximum scroll batches per category
+            max_pages_per_category: Maximum pages per category
             
         Returns:
             Dictionary mapping category names to product lists
@@ -543,17 +436,16 @@ class MarjanemallScraper:
             logger.info(f"{'='*60}")
             
             try:
-                products = self.scrape_category(category, max_scroll_batches=max_scroll_batches)
+                products = self.scrape_category(category, max_pages_per_category)
                 results[category] = products
                 logger.info(f"Completed '{category}': {len(products)} products")
                 
-                # Longer delay between categories
-                time.sleep(self.delay + random.uniform(3, 6))
+                # Delay between categories
+                time.sleep(self.scroll_delay * 2)
                 
             except Exception as e:
                 logger.error(f"Error scraping category '{category}': {e}", exc_info=True)
                 results[category] = []
-                time.sleep(10)  # Wait longer after error
         
         # Summary
         total = sum(len(p) for p in results.values())
@@ -567,3 +459,28 @@ class MarjanemallScraper:
             logger.info(f"  {cat}: {len(prods)} products")
         
         return results
+    
+    def start(self):
+        """Manually start the browser (alternative to context manager)"""
+        if not self.playwright:
+            self.playwright = sync_playwright().start()
+        if not self.browser:
+            self.browser = self.playwright.chromium.launch(
+                headless=self.headless,
+                args=['--disable-blink-features=AutomationControlled']
+            )
+        if not self.context:
+            self.context = self.browser.new_context(
+                viewport={'width': 1920, 'height': 1080},
+                user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            )
+    
+    def stop(self):
+        """Manually stop the browser"""
+        if self.browser:
+            self.browser.close()
+            self.browser = None
+        if self.playwright:
+            self.playwright.stop()
+            self.playwright = None
+        self.context = None
