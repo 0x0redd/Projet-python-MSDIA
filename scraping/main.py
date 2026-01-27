@@ -55,12 +55,14 @@ def save_data(products: list, format: str = 'both'):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if format in ['csv', 'both']:
-        csv_path = f"data/raw/jumia_products_{timestamp}.csv"
+        csv_path = f"scraping/data/raw/jumia_products_{timestamp}.csv"
+        Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
         logger.info(f"Data saved to {csv_path}")
     
     if format in ['parquet', 'both']:
-        parquet_path = f"data/raw/jumia_products_{timestamp}.parquet"
+        parquet_path = f"scraping/data/raw/jumia_products_{timestamp}.parquet"
+        Path(parquet_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(parquet_path, index=False)
         logger.info(f"Data saved to {parquet_path}")
     
@@ -94,12 +96,14 @@ def save_all_categories_data(all_results: dict, format: str = 'both'):
             category_safe = category.replace('/', '_')
             
             if format in ['csv', 'both']:
-                csv_path = f"data/raw/jumia_{category_safe}_{timestamp}.csv"
+                csv_path = f"scraping/data/raw/jumia_{category_safe}_{timestamp}.csv"
+                Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
                 df.to_csv(csv_path, index=False, encoding='utf-8-sig')
                 logger.info(f"Category '{category}': {len(products)} products saved to {csv_path}")
             
             if format in ['parquet', 'both']:
-                parquet_path = f"data/raw/jumia_{category_safe}_{timestamp}.parquet"
+                parquet_path = f"scraping/data/raw/jumia_{category_safe}_{timestamp}.parquet"
+                Path(parquet_path).parent.mkdir(parents=True, exist_ok=True)
                 df.to_parquet(parquet_path, index=False)
                 logger.info(f"Category '{category}': {len(products)} products saved to {parquet_path}")
 

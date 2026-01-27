@@ -47,12 +47,15 @@ class DatabaseManager:
             cluster_name: MongoDB Atlas cluster name (e.g., "cluster0.xxxxx" or full hostname)
             use_env: Whether to load credentials from .env file (default: True)
         """
+        # Check if we should use local MongoDB
+        use_local = os.getenv('MONGODB_USE_LOCAL', 'false').lower() == 'true'
+        
         # Load from environment variables if use_env is True
         if use_env:
             if not connection_string:
                 connection_string = os.getenv('MONGODB_CONNECTION_STRING')
             if not database_name:
-                database_name = os.getenv('MONGODB_DATABASE', 'jumia_products')
+                database_name = os.getenv('MONGODB_DATABASE', 'project10' if use_local else 'jumia_products')
             if not public_key:
                 public_key = os.getenv('MONGODB_USERNAME')
             if not private_key:
@@ -60,10 +63,20 @@ class DatabaseManager:
             if not cluster_name:
                 cluster_name = os.getenv('MONGODB_CLUSTER')
         
-        self.database_name = database_name or "jumia_products"
+        # Set default database name
+        if not database_name:
+            database_name = 'project10' if use_local else 'jumia_products'
+        
+        self.database_name = database_name
         
         # Build connection string
-        if connection_string:
+        if use_local or (not connection_string and not public_key and not private_key):
+            # Use local MongoDB
+            local_host = os.getenv('MONGODB_LOCAL_HOST', 'localhost')
+            local_port = os.getenv('MONGODB_LOCAL_PORT', '27017')
+            self.connection_string = f"mongodb://{local_host}:{local_port}/"
+            logger.info(f"Using local MongoDB: {local_host}:{local_port}")
+        elif connection_string:
             # Replace <db_password> placeholder if present
             if '<db_password>' in connection_string:
                 if private_key:
@@ -94,6 +107,7 @@ class DatabaseManager:
         else:
             # Default local MongoDB
             self.connection_string = "mongodb://localhost:27017/"
+            logger.info("Using default local MongoDB: localhost:27017")
         
         # Connect to MongoDB
         try:

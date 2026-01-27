@@ -1,6 +1,7 @@
 """
 Main script for Marjanemall.ma scraper
-Uses Playwright to scrape products and saves data to CSV/Parquet
+Uses Playwright to scrape products and saves data to CSV/JSON
+Supports scraping all categories or specific ones
 """
 
 import sys
@@ -8,213 +9,270 @@ from pathlib import Path
 import pandas as pd
 from datetime import datetime
 import logging
+import json
 
-# Add project root to path
-project_root = Path(__file__).parent.parent.parent
-sys.path.insert(0, str(project_root))
+# Ensure marjanemall_scraper.py is importable
+sys.path.insert(0, str(Path(__file__).parent))
 
-from scraping.marjanemall.marjanemall_scraper import MarjanemallScraper
+from marjanemall_scraper import MarjanemallScraper
 
-# Ensure logs directory exists before configuring logging
+# Ensure output directories exist
 Path('logs').mkdir(parents=True, exist_ok=True)
-Path('scraping/data/raw').mkdir(parents=True, exist_ok=True)
+Path('data').mkdir(parents=True, exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('logs/scraping_marjanemall.log', encoding='utf-8'),
+        logging.FileHandler('logs/marjanemall_scraping.log', encoding='utf-8'),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
 
 
-def save_data(products: list, format: str = 'both', prefix: str = 'marjanemall'):
-    """
-    Save scraped data to file(s)
-    
-    Args:
-        products: List of product dictionaries
-        format: 'csv', 'parquet', or 'both'
-        prefix: Prefix for filename
-    """
+def save_to_csv(products: list, filename: str):
+    """Save products to CSV file"""
     if not products:
         logger.warning("No products to save")
         return
     
     df = pd.DataFrame(products)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    if format in ['csv', 'both']:
-        csv_path = f"scraping/data/raw/{prefix}_products_{timestamp}.csv"
-        df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-        logger.info(f"Data saved to {csv_path}")
-    
-    if format in ['parquet', 'both']:
-        parquet_path = f"scraping/data/raw/{prefix}_products_{timestamp}.parquet"
-        df.to_parquet(parquet_path, index=False)
-        logger.info(f"Data saved to {parquet_path}")
-    
-    logger.info(f"Total products saved: {len(products)}")
-    logger.info(f"Columns: {list(df.columns)}")
+    df.to_csv(filename, index=False, encoding='utf-8-sig')
+    logger.info(f"💾 Saved {len(products)} products to {filename}")
 
 
-def save_all_categories_data(all_results: dict, format: str = 'both'):
-    """
-    Save data from all categories
+def save_to_json(products: list, filename: str):
+    """Save products to JSON file"""
+    if not products:
+        logger.warning("No products to save")
+        return
     
-    Args:
-        all_results: Dictionary mapping category names to product lists
-        format: 'csv', 'parquet', or 'both'
-    """
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    with open(filename, 'w', encoding='utf-8') as f:
+        json.dump(products, f, ensure_ascii=False, indent=2)
+    logger.info(f"💾 Saved {len(products)} products to {filename}")
+
+
+def save_category_results(category: str, products: list, timestamp: str, output_format: str = 'both'):
+    """Save results for a single category"""
+    if not products:
+        return
     
-    # Save combined data
+    category_safe = category.replace('/', '_').replace(' ', '_')
+    
+    if output_format in ['csv', 'both']:
+        csv_file = f"data/marjanemall_{category_safe}_{timestamp}.csv"
+        save_to_csv(products, csv_file)
+    
+    if output_format in ['json', 'both']:
+        json_file = f"data/marjanemall_{category_safe}_{timestamp}.json"
+        save_to_json(products, json_file)
+
+
+def save_all_results(all_results: dict, timestamp: str, output_format: str = 'both'):
+    """Save combined results from all categories"""
+    # Combine all products
     all_products = []
     for category, products in all_results.items():
         all_products.extend(products)
     
-    if all_products:
-        save_data(all_products, format=format, prefix='marjanemall_all')
-        logger.info(f"Combined data: {len(all_products)} products from {len(all_results)} categories")
+    if not all_products:
+        logger.warning("No products to save")
+        return
     
-    # Save per-category data
+    # Save combined file
+    if output_format in ['csv', 'both']:
+        csv_file = f"data/marjanemall_ALL_CATEGORIES_{timestamp}.csv"
+        save_to_csv(all_products, csv_file)
+    
+    if output_format in ['json', 'both']:
+        json_file = f"data/marjanemall_ALL_CATEGORIES_{timestamp}.json"
+        save_to_json(all_products, json_file)
+    
+    # Save individual category files
     for category, products in all_results.items():
         if products:
-            df = pd.DataFrame(products)
-            category_safe = category.replace('/', '_')
-            
-            if format in ['csv', 'both']:
-                csv_path = f"scraping/data/raw/marjanemall_{category_safe}_{timestamp}.csv"
-                df.to_csv(csv_path, index=False, encoding='utf-8-sig')
-                logger.info(f"Category '{category}': {len(products)} products saved to {csv_path}")
-            
-            if format in ['parquet', 'both']:
-                parquet_path = f"scraping/data/raw/marjanemall_{category_safe}_{timestamp}.parquet"
-                df.to_parquet(parquet_path, index=False)
-                logger.info(f"Category '{category}': {len(products)} products saved to {parquet_path}")
+            save_category_results(category, products, timestamp, output_format)
+    
+    # Print summary
+    print("\n" + "="*70)
+    print("📊 SCRAPING SUMMARY")
+    print("="*70)
+    print(f"Total categories: {len(all_results)}")
+    print(f"Total products: {len(all_products)}")
+    print(f"\nProducts per category:")
+    for category, products in sorted(all_results.items(), key=lambda x: len(x[1]), reverse=True):
+        print(f"  • {category}: {len(products)} products")
+    print("="*70)
+
+
+def print_sample_products(products: list, category: str = None, num_samples: int = 3):
+    """Print sample products"""
+    if not products:
+        return
+    
+    print("\n" + "="*70)
+    if category:
+        print(f"📦 SAMPLE PRODUCTS from '{category}'")
+    else:
+        print(f"📦 SAMPLE PRODUCTS")
+    print("="*70)
+    
+    for i, product in enumerate(products[:num_samples], 1):
+        print(f"\n{i}. {product.get('name', 'N/A')}")
+        print(f"   💰 Price: {product.get('price', 'N/A')}")
+        if product.get('old_price'):
+            print(f"   🏷️  Original Price: {product.get('old_price', 'N/A')}")
+        print(f"   🏪 Seller: {product.get('seller', 'N/A')}")
+        print(f"   🆔 Product ID: {product.get('product_id', 'N/A')}")
+        print(f"   🔗 URL: {product.get('url', 'N/A')}")
+    print("="*70)
 
 
 def main():
     """Main scraping function"""
     import argparse
     
-    parser = argparse.ArgumentParser(description='Scrape products from Marjanemall.ma using Playwright')
-    parser.add_argument('--category', type=str, help='Specific category to scrape (e.g., telephone-objets-connectes)')
-    parser.add_argument('--all', action='store_true', help='Scrape all categories')
-    parser.add_argument('--max-pages', type=int, default=150, help='Maximum pages per category (default: 150)')
-    parser.add_argument('--scroll-delay', type=float, default=2.0, help='Delay between scrolls in seconds (default: 2.0)')
-    parser.add_argument('--headless', action='store_true', default=True, help='Run browser in headless mode (default: True)')
-    parser.add_argument('--no-headless', dest='headless', action='store_false', help='Show browser window')
-    parser.add_argument('--format', type=str, default='both', choices=['csv', 'parquet', 'both'],
+    parser = argparse.ArgumentParser(
+        description='Scrape products from Marjanemall.ma using Playwright',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Scrape ALL categories (all pages)
+  python main.py --all
+  
+  # Scrape ALL categories with page limit
+  python main.py --all --max-pages 5
+  
+  # Scrape specific category (all pages)
+  python main.py --category informatique-gaming
+  
+  # Scrape specific category with page limit
+  python main.py --category telephone-objets-connectes --max-pages 10
+  
+  # Scrape multiple specific categories
+  python main.py --categories informatique-gaming telephone-objets-connectes electromenager
+  
+  # Show browser window (not headless)
+  python main.py --all --no-headless
+  
+  # Save only CSV format
+  python main.py --all --format csv
+        """
+    )
+    
+    parser.add_argument('--category', type=str, 
+                       help='Scrape a specific category (e.g., telephone-objets-connectes)')
+    parser.add_argument('--categories', nargs='+', 
+                       help='Scrape multiple specific categories')
+    parser.add_argument('--all', action='store_true', 
+                       help='Scrape ALL categories')
+    parser.add_argument('--max-pages', type=int, 
+                       help='Maximum pages per category (default: unlimited)')
+    parser.add_argument('--headless', action='store_true', default=True,
+                       help='Run browser in headless mode (default: True)')
+    parser.add_argument('--no-headless', dest='headless', action='store_false',
+                       help='Show browser window')
+    parser.add_argument('--format', type=str, default='both', 
+                       choices=['csv', 'json', 'both'],
                        help='Output format (default: both)')
+    parser.add_argument('--list-categories', action='store_true',
+                       help='List all available categories and exit')
+    
     args = parser.parse_args()
     
-    logger.info("Starting Marjanemall.ma scraper (Playwright)...")
+    # List categories if requested
+    if args.list_categories:
+        print("\n📂 Available categories:")
+        for i, cat in enumerate(MarjanemallScraper.CATEGORIES, 1):
+            print(f"  {i}. {cat}")
+        print()
+        return
     
-    # Initialize scraper with context manager
+    # Validate arguments
+    if not (args.all or args.category or args.categories):
+        parser.print_help()
+        print("\n⚠️  Error: You must specify --all, --category, or --categories")
+        sys.exit(1)
+    
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    logger.info("="*70)
+    logger.info("🚀 Starting Marjanemall.ma scraper (Playwright)")
+    logger.info("="*70)
+    
     try:
-        with MarjanemallScraper(headless=args.headless, scroll_delay=args.scroll_delay) as scraper:
-            # Scrape products
+        with MarjanemallScraper(headless=args.headless) as scraper:
+            
             if args.all:
-                # Scrape all categories
-                logger.info("Scraping ALL categories...")
+                # Scrape ALL categories
+                logger.info("📂 Mode: SCRAPE ALL CATEGORIES")
+                if args.max_pages:
+                    logger.info(f"⚙️  Max pages per category: {args.max_pages}")
+                else:
+                    logger.info(f"⚙️  Max pages per category: unlimited (until no more products)")
+                
                 all_results = scraper.scrape_all_categories(max_pages_per_category=args.max_pages)
+                save_all_results(all_results, timestamp, args.format)
                 
-                # Save all data
-                save_all_categories_data(all_results, format=args.format)
-                
-                # Print summary
-                print("\n" + "="*60)
-                print("SCRAPING SUMMARY - ALL CATEGORIES")
-                print("="*60)
-                total_products = sum(len(products) for products in all_results.values())
-                print(f"Total products scraped: {total_products}")
-                print(f"\nProducts per category:")
-                for category, products in all_results.items():
-                    print(f"  {category}: {len(products)} products")
-                
-                # Show sample products
+                # Show sample from first category
                 if all_results:
                     first_category = next(iter(all_results.keys()))
                     if all_results[first_category]:
-                        print(f"\nSample products (first 3 from '{first_category}'):")
-                        for i, product in enumerate(all_results[first_category][:3], 1):
-                            print(f"\n{i}. {product.get('product_name', 'N/A')}")
-                            print(f"   Price: {product.get('current_price_text', 'N/A')}")
-                            print(f"   Original Price: {product.get('original_price', 'N/A')}")
-                            print(f"   Discount: {product.get('discount_percentage', 'N/A')}")
-                            print(f"   Brand: {product.get('brand', 'N/A')}")
-                            print(f"   Seller: {product.get('seller', 'N/A')}")
-                            print(f"   Fast Delivery: {product.get('fast_delivery', False)}")
-                            print(f"   URL: {product.get('full_url', 'N/A')}")
+                        print_sample_products(all_results[first_category], first_category)
+            
+            elif args.categories:
+                # Scrape multiple specific categories
+                logger.info(f"📂 Mode: SCRAPE SPECIFIC CATEGORIES ({len(args.categories)} categories)")
+                logger.info(f"📋 Categories: {', '.join(args.categories)}")
+                
+                all_results = scraper.scrape_all_categories(
+                    max_pages_per_category=args.max_pages,
+                    categories=args.categories
+                )
+                save_all_results(all_results, timestamp, args.format)
+                
+                # Show sample from first category
+                if all_results:
+                    first_category = next(iter(all_results.keys()))
+                    if all_results[first_category]:
+                        print_sample_products(all_results[first_category], first_category)
             
             elif args.category:
-                # Scrape specific category
-                logger.info(f"Scraping category: {args.category}")
+                # Scrape single category
+                logger.info(f"📂 Mode: SCRAPE SINGLE CATEGORY")
+                logger.info(f"📋 Category: {args.category}")
+                if args.max_pages:
+                    logger.info(f"⚙️  Max pages: {args.max_pages}")
+                else:
+                    logger.info(f"⚙️  Max pages: unlimited")
+                
                 products = scraper.scrape_category(args.category, max_pages=args.max_pages)
                 
                 if products:
-                    # Save data
-                    save_data(products, format=args.format, prefix=f'marjanemall_{args.category}')
+                    save_category_results(args.category, products, timestamp, args.format)
                     
                     # Print summary
-                    print("\n" + "="*50)
-                    print("SCRAPING SUMMARY")
-                    print("="*50)
+                    print("\n" + "="*70)
+                    print("📊 SCRAPING SUMMARY")
+                    print("="*70)
                     print(f"Category: {args.category}")
-                    print(f"Total products scraped: {len(products)}")
-                    print(f"\nSample products:")
-                    for i, product in enumerate(products[:3], 1):
-                        print(f"\n{i}. {product.get('product_name', 'N/A')}")
-                        print(f"   Price: {product.get('current_price_text', 'N/A')}")
-                        print(f"   Original Price: {product.get('original_price', 'N/A')}")
-                        print(f"   Discount: {product.get('discount_percentage', 'N/A')}")
-                        print(f"   Brand: {product.get('brand', 'N/A')}")
-                        print(f"   Seller: {product.get('seller', 'N/A')}")
-                        print(f"   Fast Delivery: {product.get('fast_delivery', False)}")
-                        print(f"   Product ID: {product.get('product_id', 'N/A')}")
-                        print(f"   URL: {product.get('full_url', 'N/A')}")
-                else:
-                    logger.warning("No products were scraped")
-            
-            else:
-                # Default: scrape telephone-objets-connectes category (1 page for quick test)
-                logger.info("Scraping default category: telephone-objets-connectes (1 page)")
-                products = scraper.scrape_category('telephone-objets-connectes', max_pages=1)
-                
-                if products:
-                    # Save data
-                    save_data(products, format=args.format)
+                    print(f"Total products: {len(products)}")
+                    print("="*70)
                     
-                    # Print summary
-                    print("\n" + "="*50)
-                    print("SCRAPING SUMMARY")
-                    print("="*50)
-                    print(f"Total products scraped: {len(products)}")
-                    print(f"\nSample products:")
-                    for i, product in enumerate(products[:3], 1):
-                        print(f"\n{i}. {product.get('product_name', 'N/A')}")
-                        print(f"   Price: {product.get('current_price_text', 'N/A')}")
-                        print(f"   Original Price: {product.get('original_price', 'N/A')}")
-                        print(f"   Discount: {product.get('discount_percentage', 'N/A')}")
-                        print(f"   Brand: {product.get('brand', 'N/A')}")
-                        print(f"   Seller: {product.get('seller', 'N/A')}")
-                        print(f"   Fast Delivery: {product.get('fast_delivery', False)}")
-                        print(f"   Product ID: {product.get('product_id', 'N/A')}")
-                        print(f"   URL: {product.get('full_url', 'N/A')}")
+                    print_sample_products(products, args.category)
                 else:
-                    logger.warning("No products were scraped")
+                    logger.warning("⚠️  No products were scraped")
     
     except KeyboardInterrupt:
-        logger.warning("Scraping interrupted by user")
+        logger.warning("⚠️  Scraping interrupted by user")
         sys.exit(1)
     except Exception as e:
-        logger.error(f"Error during scraping: {e}", exc_info=True)
+        logger.error(f"❌ Error during scraping: {e}", exc_info=True)
         sys.exit(1)
+    
+    logger.info("\n✅ Scraping completed successfully!")
 
 
 if __name__ == "__main__":

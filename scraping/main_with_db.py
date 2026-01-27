@@ -57,12 +57,14 @@ def save_data(products: list, format: str = 'both'):
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     if format in ['csv', 'both']:
-        csv_path = f"data/raw/jumia_products_{timestamp}.csv"
+        csv_path = f"scraping/data/raw/jumia_products_{timestamp}.csv"
+        Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_csv(csv_path, index=False, encoding='utf-8-sig')
         logger.info(f"Data saved to {csv_path}")
     
     if format in ['parquet', 'both']:
-        parquet_path = f"data/raw/jumia_products_{timestamp}.parquet"
+        parquet_path = f"scraping/data/raw/jumia_products_{timestamp}.parquet"
+        Path(parquet_path).parent.mkdir(parents=True, exist_ok=True)
         df.to_parquet(parquet_path, index=False)
         logger.info(f"Data saved to {parquet_path}")
     
@@ -96,12 +98,14 @@ def save_all_categories_data(all_results: dict, format: str = 'both'):
             category_safe = category.replace('/', '_')
             
             if format in ['csv', 'both']:
-                csv_path = f"data/raw/jumia_{category_safe}_{timestamp}.csv"
+                csv_path = f"scraping/data/raw/jumia_{category_safe}_{timestamp}.csv"
+                Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
                 df.to_csv(csv_path, index=False, encoding='utf-8-sig')
                 logger.info(f"Category '{category}': {len(products)} products saved to {csv_path}")
             
             if format in ['parquet', 'both']:
-                parquet_path = f"data/raw/jumia_{category_safe}_{timestamp}.parquet"
+                parquet_path = f"scraping/data/raw/jumia_{category_safe}_{timestamp}.parquet"
+                Path(parquet_path).parent.mkdir(parents=True, exist_ok=True)
                 df.to_parquet(parquet_path, index=False)
                 logger.info(f"Category '{category}': {len(products)} products saved to {parquet_path}")
 
@@ -135,14 +139,15 @@ def main():
     db = None
     if not args.no_db:
         try:
-            # Use command-line args if provided, otherwise use .env file
+            # Use local MongoDB (localhost:27017, database: project10)
+            # Override with command-line args if provided
             db = DatabaseManager(
-                connection_string=args.connection_string,
-                database_name=args.db_name,
+                connection_string=args.connection_string or "mongodb://localhost:27017/",
+                database_name=args.db_name or "project10",
                 public_key=args.public_key,
                 private_key=args.private_key,
                 cluster_name=args.cluster_name,
-                use_env=True  # Load from .env if args not provided
+                use_env=False  # Use explicit local connection unless args provided
             )
             logger.info("Database initialized")
         except Exception as e:

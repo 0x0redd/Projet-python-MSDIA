@@ -31,8 +31,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Import scrapers and database
-from scraping.jumia_scraper import JumiaScraper
-from scraping.marjanemall_scraper import MarjanemallScraper
+from scraping.jumia.jumia_scraper import JumiaScraper
+from scraping.marjanemall.marjanemall_scraper import MarjanemallScraper
 from database.db_manager import DatabaseManager
 
 
@@ -53,8 +53,15 @@ class ScrapingOrchestrator:
         try:
             logger.info("="*80)
             logger.info("Initializing MongoDB connection...")
-            self.db = DatabaseManager(use_env=True)
+            # Use local MongoDB: localhost:27017 with database 'project10'
+            self.db = DatabaseManager(
+                connection_string="mongodb://localhost:27017/",
+                database_name="project10",
+                use_env=False  # Don't use .env, use explicit local connection
+            )
             logger.info("Database connection established successfully")
+            logger.info(f"Connected to: localhost:27017")
+            logger.info(f"Database: project10")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}", exc_info=True)
@@ -123,48 +130,36 @@ class ScrapingOrchestrator:
         logger.info("="*80)
         
         marjanemall_start = time.time()
-        scraper = MarjanemallScraper(delay=1.0)
+        scraper = MarjanemallScraper(headless=True, scroll_delay=2.0)
         
-        categories = [
-            'telephone-objets-connectes',
-            'tv-son-photo',
-            'informatique-gaming',
-            'electromenager',
-            'maison-cuisine-deco',
-            'beaute-sante',
-            'vetements-chaussures-bijoux-accessoires',
-            'bebe-jouets',
-            'sport',
-            'auto-moto',
-            'brico-jardin-animalerie',
-            'librairie',
-            'epicerie-fine'
-        ]
+        # Use categories from scraper
+        categories = scraper.CATEGORIES
         
         all_products = []
         
-        for idx, category in enumerate(categories, 1):
-            category_start = time.time()
-            logger.info(f"\n[{idx}/{len(categories)}] Scraping Marjanemall category: {category}")
-            
-            try:
-                products = scraper.scrape_category(category, max_pages=max_pages_per_category)
+        with scraper:
+            for idx, category in enumerate(categories, 1):
+                category_start = time.time()
+                logger.info(f"\n[{idx}/{len(categories)}] Scraping Marjanemall category: {category}")
                 
-                if products:
-                    all_products.extend(products)
-                    self.stats['marjanemall']['categories'] += 1
-                    self.stats['marjanemall']['products'] += len(products)
-                    category_time = time.time() - category_start
-                    logger.info(f"✓ Category '{category}': {len(products)} products in {category_time:.2f}s")
-                else:
-                    logger.warning(f"⚠ No products found in category '{category}'")
-                    self.stats['marjanemall']['errors'] += 1
+                try:
+                    products = scraper.scrape_category(category, max_pages=max_pages_per_category or 200)
                     
-            except Exception as e:
-                logger.error(f"✗ Error scraping category '{category}': {e}", exc_info=True)
-                self.stats['marjanemall']['errors'] += 1
-                # Continue with next category
-                continue
+                    if products:
+                        all_products.extend(products)
+                        self.stats['marjanemall']['categories'] += 1
+                        self.stats['marjanemall']['products'] += len(products)
+                        category_time = time.time() - category_start
+                        logger.info(f"✓ Category '{category}': {len(products)} products in {category_time:.2f}s")
+                    else:
+                        logger.warning(f"⚠ No products found in category '{category}'")
+                        self.stats['marjanemall']['errors'] += 1
+                        
+                except Exception as e:
+                    logger.error(f"✗ Error scraping category '{category}': {e}", exc_info=True)
+                    self.stats['marjanemall']['errors'] += 1
+                    # Continue with next category
+                    continue
         
         marjanemall_time = time.time() - marjanemall_start
         logger.info(f"\n{'='*80}")
@@ -308,8 +303,10 @@ def main():
     orchestrator = ScrapingOrchestrator()
     
     try:
+        # Initialize database with local MongoDB
         if not orchestrator.initialize_database():
             logger.error("Failed to initialize database. Exiting.")
+            logger.error("Make sure MongoDB is running locally on localhost:27017")
             sys.exit(1)
         
         if args.jumia_only:
@@ -319,9 +316,14 @@ def main():
                 orchestrator.save_to_database(jumia_products, "Jumia")
         elif args.marjanemall_only:
             # Scrape only Marjanemall
-            marjanemall_products = orchestrator.scrape_marjanemall(max_pages_per_category=args.max_pages)
-            if marjanemall_products:
-                orchestrator.save_to_database(marjanemall_products, "Marjanemall")
+            scraper = MarjanemallScraper(headless=True, scroll_delay=2.0)
+            with scraper:
+                marjanemall_products = scraper.scrape_all_categories(max_pages_per_category=args.max_pages or 200)
+                all_products = []
+                for category, products in marjanemall_products.items():
+                    all_products.extend(products)
+                if all_products:
+                    orchestrator.save_to_database(all_products, "Marjanemall")
         else:
             # Scrape both (default)
             orchestrator.run_full_scrape(max_pages_per_category=args.max_pages)

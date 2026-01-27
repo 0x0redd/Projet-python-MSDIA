@@ -1,15 +1,15 @@
 """
 Marjanemall.ma scraper using Playwright
 Uses browser automation to extract fully rendered product data
+Based on the working test.py implementation with enhancements for all categories
 """
 
-from playwright.sync_api import sync_playwright, Page, BrowserContext
+from playwright.sync_api import sync_playwright, Page
+from urllib.parse import urljoin
 import time
-import json
+import logging
 import re
 from typing import List, Dict, Optional
-from urllib.parse import urljoin
-import logging
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -18,11 +18,12 @@ logger = logging.getLogger(__name__)
 class MarjanemallScraper:
     """Scraper for Marjanemall.ma using Playwright"""
     
-    # Category slugs to scrape
+    # All available categories on Marjanemall.ma
     CATEGORIES = [
         'telephone-objets-connectes',
         'informatique-gaming',
         'electromenager',
+        'tv-image-son',
         'maison-cuisine-deco',
         'beaute-sante',
         'vetements-chaussures-bijoux-accessoires',
@@ -49,6 +50,7 @@ class MarjanemallScraper:
         self.playwright = None
         self.browser = None
         self.context = None
+        self.page = None
     
     def __enter__(self):
         """Context manager entry"""
@@ -61,6 +63,8 @@ class MarjanemallScraper:
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         )
+        self.page = self.context.new_page()
+        logger.info("Browser initialized successfully")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -69,159 +73,67 @@ class MarjanemallScraper:
             self.browser.close()
         if self.playwright:
             self.playwright.stop()
+        self.page = None
+        self.context = None
+        self.browser = None
+        self.playwright = None
+        logger.info("Browser closed")
     
-    def extract_price(self, price_text: str) -> Optional[float]:
+    def scrape_page(self, category: str, page_num: int) -> List[Dict]:
         """
-        Extract numeric price from text
+        Scrape a single page using Playwright - EXACT implementation from test.py
         
         Args:
-            price_text: Price text (e.g., "99.00 DH" or "99 DH")
-            
-        Returns:
-            Float price value or None
-        """
-        if not price_text:
-            return None
-        
-        # Handle price ranges
-        if ' - ' in price_text or ' – ' in price_text or ' — ' in price_text:
-            price_text = re.split(r'\s*[-–—]\s*', price_text)[0].strip()
-        
-        # Remove currency and spaces, keep only digits and dots
-        price_clean = re.sub(r'[^\d.]', '', price_text.replace(' ', ''))
-        
-        try:
-            return float(price_clean)
-        except ValueError:
-            logger.warning(f"Could not parse price: {price_text}")
-            return None
-    
-    def extract_products_from_page(self, page: Page, category: str, page_num: int = 1) -> List[Dict]:
-        """
-        Extract products from a rendered page using JavaScript
-        
-        Args:
-            page: Playwright page object
-            category: Category name
+            category: Category slug (e.g., 'telephone-objets-connectes')
             page_num: Page number
             
         Returns:
             List of product dictionaries
         """
+        url = f"{self.base_url}/{category}?page={page_num}"
+        
+        logger.info(f"📦 Scraping page {page_num} of category '{category}'")
+        
         try:
-            # Execute JavaScript to extract product data
-            product_data = page.evaluate("""
+            # Navigate to page
+            self.page.goto(url, wait_until='networkidle', timeout=60000)
+            
+            # Wait for content to load
+            time.sleep(2)
+            
+            # Scroll to trigger lazy loading
+            self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(2)
+            
+            # Scroll back up and down again
+            self.page.evaluate("window.scrollTo(0, 0)")
+            time.sleep(1)
+            self.page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(2)
+
+            # Extract products using JavaScript - EXACT same code as test.py
+            products = self.page.evaluate("""
                 () => {
                     const products = [];
+                    const cards = document.querySelectorAll('a[href^="/p/"]');
                     
-                    // Look for product elements
-                    const productElements = document.querySelectorAll('div.animate-slideUp');
-                    
-                    productElements.forEach(element => {
-                        const product = {};
+                    cards.forEach(card => {
+                        const nameElem = card.querySelector('h3');
+                        const priceElem = card.querySelector('span.text-lg');
+                        const oldPriceElem = card.querySelector('span.line-through');
+                        const sellerElem = card.querySelector('span.text-primary');
+                        const imageElem = card.querySelector('img');
+                        const link = card.getAttribute('href');
                         
-                        // Find the main link element
-                        const linkElem = element.querySelector('a[href^="/p/"]');
-                        if (!linkElem) return;
-                        
-                        // Get product URL and ID
-                        product.product_url = linkElem.getAttribute('href');
-                        const urlMatch = product.product_url.match(/([a-z0-9]{8,})$/i);
-                        if (urlMatch) {
-                            product.product_id = urlMatch[1].toUpperCase();
-                        }
-                        
-                        // Get product name
-                        const nameElem = linkElem.querySelector('h3.text-sm.font-medium.text-gray-800');
-                        if (!nameElem) {
-                            nameElem = linkElem.querySelector('h3');
-                        }
-                        if (nameElem) {
-                            product.product_name = nameElem.textContent.trim();
-                        }
-                        
-                        // Get current price
-                        const priceContainer = linkElem.querySelector('div.flex.items-center.gap-0.5');
-                        if (priceContainer) {
-                            const mainPrice = priceContainer.querySelector('span.text-lg, span.text-xl');
-                            if (mainPrice) {
-                                const mainPriceText = mainPrice.textContent.trim();
-                                
-                                // Get decimal parts
-                                const decimalSpans = priceContainer.querySelectorAll('span.text-\\[8px\\], span.text-\\[9px\\]');
-                                let decimals = '';
-                                decimalSpans.forEach(span => {
-                                    const text = span.textContent.trim();
-                                    if (text && text !== 'DH' && !isNaN(text)) {
-                                        decimals += text;
-                                    }
-                                });
-                                
-                                if (decimals) {
-                                    product.current_price_text = mainPriceText + '.' + decimals + ' DH';
-                                } else {
-                                    product.current_price_text = mainPriceText + ' DH';
-                                }
-                            }
-                        }
-                        
-                        // Get original price
-                        const oldPriceElem = linkElem.querySelector('span.text-xs.text-gray-400.line-through');
-                        if (oldPriceElem) {
-                            product.original_price = oldPriceElem.textContent.trim();
-                        }
-                        
-                        // Get discount
-                        const discountElem = linkElem.querySelector('span.bg-\\[#e91e63\\]');
-                        if (discountElem) {
-                            product.discount_percentage = discountElem.textContent.trim();
-                        }
-                        
-                        // Get brand (from image or name)
-                        const brandImg = element.querySelector('img[alt="Brand"]');
-                        if (brandImg) {
-                            const brandSrc = brandImg.getAttribute('src') || '';
-                            const brandMatch = brandSrc.match(/([^/]+)_\\d+\\.png/);
-                            if (brandMatch) {
-                                product.brand = brandMatch[1].toUpperCase();
-                            }
-                        }
-                        
-                        // Extract brand from name if not found
-                        if (!product.brand && product.product_name) {
-                            const nameParts = product.product_name.split(' - ');
-                            if (nameParts.length > 0) {
-                                product.brand = nameParts[0].trim();
-                            }
-                        }
-                        
-                        // Get seller
-                        const sellerSpans = linkElem.querySelectorAll('span');
-                        for (const span of sellerSpans) {
-                            const text = span.textContent.trim();
-                            if (text.includes('Vendu par')) {
-                                const match = text.match(/Vendu par\\s+(.+)/i);
-                                if (match) {
-                                    product.seller = match[1].trim();
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        // Get image
-                        const imgElem = linkElem.querySelector('img.object-contain, img');
-                        if (imgElem) {
-                            product.image_url = imgElem.getAttribute('src') || imgElem.getAttribute('data-src');
-                            product.image_alt = imgElem.getAttribute('alt');
-                        }
-                        
-                        // Check for fast delivery
-                        const expressText = linkElem.textContent || '';
-                        product.fast_delivery = expressText.includes('Livraison rapide');
-                        
-                        // Only add if we have essential data
-                        if (product.product_name || product.product_id) {
-                            products.push(product);
+                        if (nameElem || link) {
+                            products.push({
+                                name: nameElem ? nameElem.textContent.trim() : null,
+                                price: priceElem ? priceElem.textContent.trim() : null,
+                                old_price: oldPriceElem ? oldPriceElem.textContent.trim() : null,
+                                seller: sellerElem ? sellerElem.textContent.replace('Vendu par', '').trim() : null,
+                                image: imageElem ? (imageElem.getAttribute('src') || imageElem.getAttribute('data-src')) : null,
+                                url: link
+                            });
                         }
                     });
                     
@@ -229,234 +141,206 @@ class MarjanemallScraper:
                 }
             """)
             
-            # Process and format products
+            logger.info(f"   🔎 Found {len(products)} product cards")
+            
+            # Normalize products for database compatibility
             formatted_products = []
-            for product in product_data:
-                formatted_product = {
-                    'product_id': product.get('product_id'),
-                    'product_name': product.get('product_name'),
-                    'product_url': product.get('product_url'),
-                    'full_url': urljoin(self.base_url, product.get('product_url', '')),
-                    'current_price_text': product.get('current_price_text'),
-                    'current_price': self.extract_price(product.get('current_price_text', '')),
-                    'original_price': product.get('original_price'),
-                    'original_price_value': self.extract_price(product.get('original_price', '')),
-                    'discount_percentage': product.get('discount_percentage'),
-                    'brand': product.get('brand'),
-                    'seller': product.get('seller'),
-                    'image_url': product.get('image_url'),
-                    'image_alt': product.get('image_alt'),
-                    'fast_delivery': product.get('fast_delivery', False),
-                    'category': category,
-                    'page_number': page_num,
-                    'scraped_timestamp': datetime.now().isoformat() + 'Z',
-                    'source': 'marjanemall.ma'
-                }
+            for product in products:
+                if product['url']:
+                    product['url'] = urljoin(self.base_url, product['url'])
                 
-                # Calculate discount value
-                if formatted_product.get('current_price') and formatted_product.get('original_price_value'):
+                # Extract product ID from URL
+                url_match = product.get('url', '').split('/')[-1]
+                product['product_id'] = url_match.upper() if url_match else None
+                
+                # Normalize price fields (same structure as JumiaScraper)
+                price_text = product.get('price', '')
+                product['price_text'] = price_text if price_text else None
+                
+                # Extract numeric price
+                if price_text:
+                    price_clean = re.sub(r'[^\d.]', '', price_text.replace(' ', ''))
                     try:
-                        current = float(formatted_product['current_price'])
-                        original = float(formatted_product['original_price_value'])
-                        if original > 0 and current < original:
-                            discount_percent = ((original - current) / original) * 100
-                            formatted_product['discount_value'] = int(discount_percent)
-                    except (ValueError, TypeError):
-                        formatted_product['discount_value'] = None
+                        product['price'] = float(price_clean) if price_clean else None
+                    except ValueError:
+                        product['price'] = None
                 else:
-                    formatted_product['discount_value'] = None
+                    product['price'] = None
                 
-                formatted_products.append(formatted_product)
+                # Normalize old_price
+                old_price_text = product.get('old_price', '')
+                product['old_price_text'] = old_price_text if old_price_text else None
+                if old_price_text:
+                    old_price_clean = re.sub(r'[^\d.]', '', old_price_text.replace(' ', ''))
+                    try:
+                        product['old_price'] = float(old_price_clean) if old_price_clean else None
+                    except ValueError:
+                        product['old_price'] = None
+                else:
+                    product['old_price'] = None
+                
+                # Calculate discount if both prices exist
+                if product.get('price') and product.get('old_price'):
+                    try:
+                        discount_percent = ((product['old_price'] - product['price']) / product['old_price']) * 100
+                        product['discount'] = int(discount_percent)
+                        product['discount_text'] = f"-{int(discount_percent)}%"
+                    except (ValueError, TypeError, ZeroDivisionError):
+                        product['discount'] = None
+                        product['discount_text'] = None
+                else:
+                    product['discount'] = None
+                    product['discount_text'] = None
+                
+                # Normalize image field
+                product['image_url'] = product.get('image')
+                product['image_alt'] = product.get('name')  # Use name as alt text
+                
+                # Normalize seller field
+                seller = product.get('seller')
+                product['seller'] = seller if seller else None
+                
+                # Add rating fields (None for Marjanemall as they're not scraped)
+                product['rating'] = None
+                product['review_count'] = None
+                
+                # Add metadata (use scraped_at for database compatibility)
+                product['category'] = category
+                product['page_number'] = page_num
+                product['scraped_at'] = datetime.now().isoformat()  # Database expects 'scraped_at'
+                product['scraped_timestamp'] = product['scraped_at']  # Keep both for compatibility
+                product['source'] = 'marjanemall.ma'
+                
+                # Add fields expected by database
+                product['raw_price'] = product.get('price')  # Same as price for Marjanemall
+                product['price_euro'] = None
+                product['old_price_euro'] = None
+                product['discount_euro'] = None
+                product['express_delivery'] = False  # Can be enhanced later
+                product['is_official_store'] = False
+                product['is_sponsored'] = False
+                product['is_buyable'] = True
+                
+                formatted_products.append(product)
             
-            logger.info(f"Extracted {len(formatted_products)} products from page {page_num}")
             return formatted_products
-            
+        
         except Exception as e:
-            logger.error(f"Error extracting products from page: {e}", exc_info=True)
+            logger.error(f"❌ Error scraping page {page_num} of {category}: {e}")
             return []
     
-    def is_empty_page(self, page: Page) -> bool:
+    def scrape_category(self, category: str, max_pages: int = None) -> List[Dict]:
         """
-        Check if the page is empty (no products found)
-        
-        Args:
-            page: Playwright page object
-            
-        Returns:
-            True if page is empty, False otherwise
-        """
-        try:
-            empty_check = page.evaluate("""
-                () => {
-                    // Check for "Aucun produit trouvé" message
-                    const emptyText = document.body.textContent || '';
-                    if (emptyText.includes('Aucun produit trouvé')) {
-                        return true;
-                    }
-                    
-                    // Check if grid is empty
-                    const grid = document.querySelector('div.grid.grid-cols-2');
-                    if (grid) {
-                        const productElements = grid.querySelectorAll('div.animate-slideUp');
-                        return productElements.length === 0;
-                    }
-                    
-                    return false;
-                }
-            """)
-            return empty_check
-        except:
-            return False
-    
-    def scrape_category_page(self, category: str, page_num: int = 1) -> List[Dict]:
-        """
-        Scrape a single category page
+        Scrape all pages of a category until no more products found
         
         Args:
             category: Category slug
-            page_num: Page number
-            
-        Returns:
-            List of product dictionaries
-        """
-        if not self.context:
-            raise RuntimeError("Scraper not initialized. Use 'with' statement or call start() first")
-        
-        # Construct URL
-        if page_num == 1:
-            url = f"{self.base_url}/{category}"
-        else:
-            url = f"{self.base_url}/{category}?page={page_num}"
-        
-        logger.info(f"Scraping page {page_num} of category '{category}': {url}")
-        
-        page = self.context.new_page()
-        
-        try:
-            # Navigate to page
-            page.goto(url, wait_until='networkidle', timeout=60000)
-            
-            # Wait for content to load
-            time.sleep(3)
-            
-            # Check for empty page
-            if self.is_empty_page(page):
-                logger.info(f"Empty page detected on page {page_num}")
-                return []
-            
-            # Scroll to trigger lazy loading
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(self.scroll_delay)
-            
-            # Scroll back up and down again to ensure all content loads
-            page.evaluate("window.scrollTo(0, 0)")
-            time.sleep(1)
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(self.scroll_delay)
-            
-            # Extract products
-            products = self.extract_products_from_page(page, category, page_num)
-            
-            return products
-            
-        except Exception as e:
-            logger.error(f"Error scraping page {page_num} of {category}: {e}", exc_info=True)
-            return []
-        finally:
-            page.close()
-    
-    def scrape_category(self, category: str, max_pages: int = 150) -> List[Dict]:
-        """
-        Scrape all pages of a category
-        
-        Args:
-            category: Category slug
-            max_pages: Maximum number of pages to scrape
+            max_pages: Maximum number of pages to scrape (None = unlimited)
             
         Returns:
             List of all product dictionaries from the category
         """
+        if not self.page:
+            raise RuntimeError("Scraper not initialized. Use 'with' statement")
+        
         all_products = []
-        seen_product_ids = set()
+        page_num = 1
+        consecutive_empty = 0
+        max_consecutive_empty = 3  # Stop after 3 consecutive empty pages
         
-        logger.info(f"Starting to scrape category: {category}")
+        logger.info(f"🚀 Starting category: {category}")
         
-        page = 1
-        while page <= max_pages:
-            products = self.scrape_category_page(category, page)
-            
-            if not products:
-                logger.info(f"No products found on page {page}, stopping")
-                break
-            
-            # Filter duplicates
-            new_products = []
-            for product in products:
-                product_id = product.get('product_id')
-                if product_id and product_id not in seen_product_ids:
-                    seen_product_ids.add(product_id)
-                    new_products.append(product)
-                elif not product_id:
-                    # Use URL as fallback
-                    url = product.get('product_url')
-                    if url and url not in seen_product_ids:
-                        seen_product_ids.add(url)
-                        new_products.append(product)
-            
-            if not new_products:
-                logger.info(f"All products on page {page} are duplicates, stopping")
-                break
-            
-            all_products.extend(new_products)
-            logger.info(f"Page {page}: Added {len(new_products)} new products (total: {len(all_products)})")
-            
-            page += 1
-            
-            # Delay between pages
-            time.sleep(self.scroll_delay)
+        try:
+            while True:
+                # Check max_pages limit
+                if max_pages and page_num > max_pages:
+                    logger.info(f"✅ Reached max_pages limit ({max_pages})")
+                    break
+                
+                # Scrape page
+                products = self.scrape_page(category, page_num)
+                
+                # Check if page is empty
+                if not products:
+                    consecutive_empty += 1
+                    logger.info(f"   ⚠️  Empty page ({consecutive_empty}/{max_consecutive_empty})")
+                    
+                    if consecutive_empty >= max_consecutive_empty:
+                        logger.info(f"✅ No more pages (stopped after {consecutive_empty} empty pages)")
+                        break
+                    
+                    page_num += 1
+                    time.sleep(1)
+                    continue
+                
+                # Reset empty counter and add products
+                consecutive_empty = 0
+                all_products.extend(products)
+                logger.info(f"   ✓ Added {len(products)} products (total: {len(all_products)})")
+                
+                page_num += 1
+                time.sleep(1)  # Delay between pages
         
-        logger.info(f"Category '{category}': Scraped {len(all_products)} total products from {page-1} pages")
+        except KeyboardInterrupt:
+            logger.warning(f"⚠️  Interrupted by user at page {page_num}")
+        except Exception as e:
+            logger.error(f"❌ Error scraping category '{category}': {e}", exc_info=True)
+        
+        logger.info(f"📊 Category '{category}' complete: {len(all_products)} products from {page_num-1} pages")
         return all_products
     
-    def scrape_all_categories(self, max_pages_per_category: int = 150) -> Dict[str, List[Dict]]:
+    def scrape_all_categories(self, max_pages_per_category: int = None, categories: List[str] = None) -> Dict[str, List[Dict]]:
         """
         Scrape all categories
         
         Args:
-            max_pages_per_category: Maximum pages per category
+            max_pages_per_category: Maximum pages per category (None = unlimited)
+            categories: List of specific categories to scrape (None = all)
             
         Returns:
             Dictionary mapping category names to product lists
         """
         results = {}
+        categories_to_scrape = categories if categories else self.CATEGORIES
         
-        for category in self.CATEGORIES:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Starting category: {category}")
-            logger.info(f"{'='*60}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"🚀 STARTING SCRAPING - {len(categories_to_scrape)} CATEGORIES")
+        logger.info(f"{'='*70}")
+        
+        for idx, category in enumerate(categories_to_scrape, 1):
+            logger.info(f"\n{'='*70}")
+            logger.info(f"📂 [{idx}/{len(categories_to_scrape)}] Category: {category}")
+            logger.info(f"{'='*70}")
             
             try:
-                products = self.scrape_category(category, max_pages_per_category)
+                products = self.scrape_category(category, max_pages=max_pages_per_category)
                 results[category] = products
-                logger.info(f"Completed '{category}': {len(products)} products")
+                logger.info(f"✅ Completed '{category}': {len(products)} products")
                 
                 # Delay between categories
-                time.sleep(self.scroll_delay * 2)
+                if idx < len(categories_to_scrape):
+                    logger.info("⏳ Waiting 3 seconds before next category...")
+                    time.sleep(3)
                 
+            except KeyboardInterrupt:
+                logger.warning(f"⚠️  Scraping interrupted by user at category '{category}'")
+                results[category] = []
+                break
             except Exception as e:
-                logger.error(f"Error scraping category '{category}': {e}", exc_info=True)
+                logger.error(f"❌ Error scraping category '{category}': {e}", exc_info=True)
                 results[category] = []
         
-        # Summary
+        # Final summary
         total = sum(len(p) for p in results.values())
-        logger.info(f"\n{'='*60}")
-        logger.info("SCRAPING COMPLETED")
-        logger.info(f"{'='*60}")
-        logger.info(f"Total categories: {len(results)}")
-        logger.info(f"Total products: {total}")
-        
+        logger.info(f"\n{'='*70}")
+        logger.info("🎉 SCRAPING COMPLETED")
+        logger.info(f"{'='*70}")
+        logger.info(f"Total categories scraped: {len(results)}")
+        logger.info(f"Total products scraped: {total}")
+        logger.info(f"\nBreakdown by category:")
         for cat, prods in results.items():
-            logger.info(f"  {cat}: {len(prods)} products")
+            logger.info(f"  • {cat}: {len(prods)} products")
+        logger.info(f"{'='*70}\n")
         
         return results
     
@@ -474,6 +358,8 @@ class MarjanemallScraper:
                 viewport={'width': 1920, 'height': 1080},
                 user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             )
+        if not self.page:
+            self.page = self.context.new_page()
     
     def stop(self):
         """Manually stop the browser"""
@@ -483,4 +369,5 @@ class MarjanemallScraper:
         if self.playwright:
             self.playwright.stop()
             self.playwright = None
+        self.page = None
         self.context = None
