@@ -143,7 +143,7 @@ class MarjanemallScraper:
             
             logger.info(f"   🔎 Found {len(products)} product cards")
             
-            # Normalize products for database compatibility
+                # Normalize products for database compatibility
             formatted_products = []
             for product in products:
                 if product['url']:
